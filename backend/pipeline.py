@@ -1,4 +1,4 @@
-"""End-to-end sourcing pipeline: discovery → parallel deep dives → email.
+"""End-to-end sourcing pipeline: discovery → parallel deep dives → results (streamed to the chat).
 
 Every step pushes an event onto an asyncio.Queue, which the FastAPI SSE endpoint
 streams to the Streamlit frontend in real time.
@@ -10,7 +10,6 @@ import time
 from backend.agents.deep_dive import deep_dive_all
 from backend.agents.discovery import discover_startups
 from backend.config import get_settings
-from backend.email_service import build_report_html, send_report
 from backend.schemas import SearchRequest
 
 DONE = object()  # sentinel that closes the stream
@@ -56,23 +55,14 @@ async def run_pipeline(req: SearchRequest, bus: EventBus):
                               "message": f"⚡ Running {len(startups)} deep-dive agents in parallel…"})
         profiles = await deep_dive_all(startups, attributes, req.criteria, emit)
 
-        # 3. Report + email
-        await emit("status", {"stage": "email", "message": f"✉️ Sending report to {req.email}…"})
-        report_html = build_report_html(req.criteria, attributes, profiles)
-        email_ok, email_error = True, None
-        try:
-            await send_report(req.email, f"Investment Sourcing Report — {len(profiles)} startups", report_html)
-        except Exception as e:
-            email_ok, email_error = False, str(e)
-            await emit("warning", {"message": f"⚠️ Email failed: {e}"})
-
+        # 3. Results go straight back to the chat
         await emit("complete", {
             "stage": "done",
+            "criteria": req.criteria,
             "attributes": attributes,
+            "startups": [s.model_dump() for s in startups],
             "profiles": [p.model_dump() for p in profiles],
-            "email_sent": email_ok,
-            "email_error": email_error,
-            "message": "🎉 Report emailed!" if email_ok else "Finished (email not sent)",
+            "message": f"🎉 Research complete — {len(profiles)} startups",
         })
     except Exception as e:
         await emit("error", {"message": f"❌ Pipeline failed: {e}"})

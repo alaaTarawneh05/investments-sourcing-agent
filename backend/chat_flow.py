@@ -1,13 +1,11 @@
 """Chatbot conversation flow (fixed steps), driven by the chat LLM call.
 
-Steps:  criteria -> enhance -> (enhance_review) -> attributes -> email -> confirm -> search
+Steps:  criteria -> enhance -> (enhance_review) -> attributes -> confirm -> search (results in the chat)
 
 The LLM writes the natural reply; this module decides the step and appends the step's question,
 so the conversation always moves forward in the same order.
 """
 import logging
-
-from email_validator import EmailNotValidError, validate_email
 
 from backend.llm.chat import chat_turn, fallback_extraction
 from backend.llm.enhance import enhance_criteria
@@ -22,7 +20,7 @@ EXAMPLES = [
 ]
 
 GREETING = "Hi! 👋 I'm **Scout**, your investment sourcing assistant. I search the web for startups that " \
-           "match your thesis, research each one, and email you a report."
+           "match your thesis, research each one, and show you the results right here in the chat."
 
 
 def compute_step(s: ConversationState) -> str:
@@ -34,14 +32,12 @@ def compute_step(s: ConversationState) -> str:
         return "enhance"
     if not (s.attributes or s.custom_attributes):
         return "attributes"
-    if not s.email:
-        return "email"
     return "confirm"
 
 
 def summary(s: ConversationState) -> str:
     attrs = ", ".join([*s.attributes, *s.custom_attributes])
-    return (f"**Criteria:** {s.criteria}\n\n**Data points:** {attrs}\n\n**Report email:** {s.email}")
+    return f"**Criteria:** {s.criteria}\n\n**Data points:** {attrs}"
 
 
 def step_prompt(step: str, s: ConversationState, reminder: bool = False) -> str:
@@ -64,8 +60,6 @@ def step_prompt(step: str, s: ConversationState, reminder: bool = False) -> str:
                 f"Presets: {', '.join(PRESET_ATTRIBUTES)}\n\n"
                 f"Pick them below, or just type, e.g. *\"the defaults plus ARR and number of customers\"*. "
                 f"You can add up to {MAX_CUSTOM_ATTRIBUTES} custom ones.")
-    if step == "email":
-        return "What **email** should I send the report to?"
     if step == "confirm":
         return f"All set! Here's the plan:\n\n{summary(s)}\n\nSay **start** (or click the button) to begin, " \
                "or tell me what to change."
@@ -126,15 +120,8 @@ def apply_extraction(ext: ChatExtraction, s: ConversationState, step: str) -> li
     attributes_changed = (attrs, custom) != (s.attributes, s.custom_attributes)
     s.attributes, s.custom_attributes = attrs, custom
 
-    # email
-    if ext.email:
-        try:
-            s.email = validate_email(ext.email.strip(), check_deliverability=False).normalized
-        except EmailNotValidError:
-            notes.append(f"⚠️ **{ext.email}** doesn't look like a valid email address.")
-
     # Giving later-step info while the enhance offer is open = "keep as is"
-    if step in ("enhance", "enhance_review") and not ext.criteria and (attributes_changed or ext.email):
+    if step in ("enhance", "enhance_review") and not ext.criteria and attributes_changed:
         s.enhance_decided, s.enhanced_candidate = True, None
     return notes
 

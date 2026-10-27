@@ -16,9 +16,6 @@ class Settings:
     search_snippet_chars: int = int(os.getenv("SEARCH_SNIPPET_CHARS", "500"))
     fetch_max_chars: int = int(os.getenv("FETCH_MAX_CHARS", "3000"))
 
-    sendgrid_api_key: str = os.getenv("SENDGRID_API_KEY", "")
-    sendgrid_from_email: str = os.getenv("SENDGRID_FROM_EMAIL", "")
-
     max_startups: int = int(os.getenv("MAX_STARTUPS", "5"))
     deep_dive_concurrency: int = int(os.getenv("DEEP_DIVE_CONCURRENCY", "2"))
 

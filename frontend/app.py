@@ -2,6 +2,8 @@
 
 Run:  streamlit run frontend/app.py
 """
+import csv
+import io
 import json
 import os
 
@@ -104,18 +106,48 @@ if not ss.messages:
 
 # ======================= render conversation =======================
 st.title("🔭 Scout")
-st.caption("Your investment sourcing chatbot — live web search · parallel research agents · email report")
+st.caption("Your investment sourcing chatbot — live web search · parallel research agents · results in the chat")
 
 
 def render_results(data):
-    rows = []
-    for p in data["profiles"]:
-        row = {a["attribute"]: a["value"] for a in p["attributes"]}
-        row["Summary"] = p.get("summary", "")
-        rows.append(row)
+    """Show the research results inside the chat: a table + one card per startup."""
+    profiles = data["profiles"]
+    why = {s["name"].strip().lower(): s.get("why_match", "") for s in data.get("startups", [])}
+
+    # 1) overview table
+    rows = [{a["attribute"]: a["value"] for a in p["attributes"]} for p in profiles]
     st.dataframe(rows, width="stretch", hide_index=True)
-    st.download_button("⬇️ Download JSON", json.dumps(data["profiles"], indent=2), "startups.json",
-                       "application/json", key=f"dl_{id(data)}")
+
+    # 2) one expandable card per startup with summary + sources
+    for i, p in enumerate(profiles, 1):
+        name = next((a["value"] for a in p["attributes"] if a["attribute"].lower() == "company name"
+                     and a["value"] != "Not found"), p["company_name"])
+        with st.expander(f"{i}. {name}"):
+            st.markdown(f"**Summary:** {p.get('summary', '')}")
+            if w := why.get(p["company_name"].strip().lower()) or why.get(name.strip().lower()):
+                st.markdown(f"**Why it matches:** {w}")
+            lines = []
+            for a in p["attributes"]:
+                src = f" · [source]({a['source_url']})" if a.get("source_url", "") and \
+                    str(a["source_url"]).startswith("http") else ""
+                lines.append(f"- **{a['attribute']}:** {a['value']}{src}")
+            st.markdown("\n".join(lines))
+
+    # 3) downloads
+    c1, c2 = st.columns(2)
+    c1.download_button("⬇️ Download CSV", to_csv(rows), "startups.csv", "text/csv",
+                       key=f"csv_{id(data)}", width="stretch")
+    c2.download_button("⬇️ Download JSON", json.dumps(profiles, indent=2), "startups.json",
+                       "application/json", key=f"json_{id(data)}", width="stretch")
+
+
+def to_csv(rows):
+    buf = io.StringIO()
+    if rows:
+        w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    return buf.getvalue()
 
 
 for m in ss.messages:
@@ -142,7 +174,7 @@ if ss.pending is not None:
 def run_search():
     s = ss.conv_state
     payload = {"criteria": s["criteria"], "attributes": s.get("attributes", []),
-               "custom_attributes": s.get("custom_attributes", []), "email": s["email"]}
+               "custom_attributes": s.get("custom_attributes", [])}
     log: list[str] = []
     final = None
     with st.chat_message("assistant", avatar="🔭"):
@@ -187,10 +219,7 @@ def run_search():
     add_msg("assistant", f"🧾 Agent activity log ({len(log)} steps)", kind="progress", data=log or ["(empty)"])
     if final:
         n = len(final["profiles"])
-        if final["email_sent"]:
-            text = f"🎉 Done! I found **{n} startups** and emailed the report to **{payload['email']}** 📬"
-        else:
-            text = f"I found **{n} startups**, but the email failed: `{final['email_error']}`"
+        text = f"🎉 Done! I found and researched **{n} startups** matching your criteria:"
         add_msg("assistant", text, kind="results", data=final)
         add_msg("assistant", "Want to run another search? Click **New search** or just tell me what you're "
                              "looking for.")

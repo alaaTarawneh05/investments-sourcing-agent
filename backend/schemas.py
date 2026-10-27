@@ -5,7 +5,7 @@ These are used both as FastAPI request/response models and as LangChain
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 PRESET_ATTRIBUTES = [
     "Company Name",
@@ -31,7 +31,6 @@ class SearchRequest(BaseModel):
     criteria: str = Field(..., min_length=3)
     attributes: list[str] = Field(default_factory=list)
     custom_attributes: list[str] = Field(default_factory=list)
-    email: EmailStr
     max_startups: Optional[int] = Field(default=None, ge=1, le=20)
 
     @field_validator("custom_attributes")
@@ -101,7 +100,7 @@ class StartupProfile(BaseModel):
 
 # ---------- Chatbot ----------
 DEFAULT_ATTRIBUTES = ["Company Name", "Year Founded", "Founders", "Website", "Funding Stage", "Location"]
-Step = Literal["criteria", "enhance", "enhance_review", "attributes", "email", "confirm"]
+Step = Literal["criteria", "enhance", "enhance_review", "attributes", "confirm"]
 
 
 class ConversationState(BaseModel):
@@ -113,7 +112,6 @@ class ConversationState(BaseModel):
     enhance_decided: bool = False
     attributes: list[str] = Field(default_factory=list)
     custom_attributes: list[str] = Field(default_factory=list)
-    email: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -145,7 +143,7 @@ class ChatExtraction(BaseModel):
                                    "Do NOT ask for the next piece of information - the app adds that.")
     intent: Literal["chat", "provide_info", "start_search", "reset"] = Field(
         description="chat = greeting/question/small talk/off-topic; provide_info = user gave or changed "
-                    "criteria, attributes or email; start_search = user wants to start/run/go; "
+                    "criteria or attributes; start_search = user wants to start/run/go; "
                     "reset = user wants a new search from scratch")
     criteria: Optional[str] = Field(default=None, description="The investment thesis/search criteria, ONLY if "
                                     "the user described the kind of startups they want (new or changed). "
@@ -156,4 +154,3 @@ class ChatExtraction(BaseModel):
     custom_attributes: list[str] = Field(default_factory=list, description="Data points the user asked for "
                                          "that are not in the preset list")
     remove_attributes: list[str] = Field(default_factory=list, description="Attributes the user wants removed")
-    email: Optional[str] = Field(default=None, description="Email address, if the user gave one")
