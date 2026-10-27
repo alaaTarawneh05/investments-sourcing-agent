@@ -17,7 +17,7 @@ def get_linkup_client() -> LinkupClient:
     return _client
 
 
-def _format_results(results, max_chars: int = 900) -> str:
+def _format_results(results, max_chars: int) -> str:
     lines = []
     for i, r in enumerate(results, 1):
         content = (getattr(r, "content", "") or "").replace("\n", " ")
@@ -38,8 +38,8 @@ async def web_search(query: str) -> str:
             query=query,
             depth=get_settings().linkup_depth,
             output_type="searchResults",
-            max_results=8,
+            max_results=get_settings().search_max_results,
         )
     except Exception as e:  # surface the error to the agent instead of crashing the run
         return f"Search failed: {e}"
-    return _format_results(res.results)
+    return _format_results(res.results, get_settings().search_snippet_chars)

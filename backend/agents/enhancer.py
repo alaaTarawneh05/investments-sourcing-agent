@@ -1,7 +1,8 @@
 """'Enhance with AI' — refine the user's raw investment thesis into better search criteria."""
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 
-from backend.config import get_settings
+from backend.config import get_model
 from backend.schemas import EnhancedQuery
 
 SYSTEM_PROMPT = """You are a venture-capital research analyst.
@@ -23,10 +24,10 @@ def get_enhancer_agent():
     global _agent
     if _agent is None:
         _agent = create_agent(
-            model=get_settings().llm_model,
+            model=get_model(),
             tools=[],
             system_prompt=SYSTEM_PROMPT,
-            response_format=EnhancedQuery,
+            response_format=ToolStrategy(EnhancedQuery),  # works on every tool-calling model
             name="criteria_enhancer",
         )
     return _agent

@@ -58,7 +58,7 @@ investments-sourcing-agent/
 
 ## Setup
 
-**Prerequisites:** Python 3.10+, plus API keys for an LLM (free Google Gemini by default; Groq or OpenAI also work), Linkup, and SendGrid.
+**Prerequisites:** Python 3.10+, plus API keys for an LLM (free **Groq** by default; Gemini or OpenAI also work), Linkup, and SendGrid.
 
 ```bash
 git clone <your-repo-url> investments-sourcing-agent
@@ -72,15 +72,16 @@ cp .env.example .env    # then fill in the keys
 
 | Variable | Description |
 |---|---|
-| `GOOGLE_API_KEY` | Free Gemini key from https://aistudio.google.com/apikey (default model) |
-| `GROQ_API_KEY` / `OPENAI_API_KEY` | Only if you switch `LLM_MODEL` to Groq or OpenAI |
-| `LLM_MODEL` | Any LangChain `provider:model` string, default `google_genai:gemini-3.6-flash`; free alternative `groq:llama-3.3-70b-versatile`; paid `openai:gpt-4o-mini` |
+| `GROQ_API_KEY` | Free Groq key from https://console.groq.com/keys (default model) |
+| `GOOGLE_API_KEY` / `OPENAI_API_KEY` | Only if you switch `LLM_MODEL` to Gemini or OpenAI |
+| `LLM_MODEL` | Any LangChain `provider:model` string, default `groq:llama-3.3-70b-versatile`; free alternatives `groq:meta-llama/llama-4-scout-17b-16e-instruct` (higher token limit), `google_genai:gemini-3.6-flash`; paid `openai:gpt-4o-mini` |
 | `LINKUP_API_KEY` | Linkup API key |
 | `LINKUP_DEPTH` | `fast`, `standard` or `deep` (deep is slower and more thorough) |
 | `SENDGRID_API_KEY` | SendGrid API key (Free Tier works) |
 | `SENDGRID_FROM_EMAIL` | A **verified sender** in SendGrid (Settings → Sender Authentication) |
 | `MAX_STARTUPS` | Default number of startups to find (the UI slider overrides it) |
-| `DEEP_DIVE_CONCURRENCY` | How many deep-dive agents run at the same time |
+| `DEEP_DIVE_CONCURRENCY` | How many deep-dive agents run at the same time (keep 1-2 on free tiers) |
+| `SEARCH_MAX_RESULTS` / `SEARCH_SNIPPET_CHARS` | Size of each search result sent to the LLM; lower these if you hit token-per-minute limits |
 | `BACKEND_URL` | Used by the frontend (default `http://localhost:8000`) |
 
 ## Run

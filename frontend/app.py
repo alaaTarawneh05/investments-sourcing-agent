@@ -135,7 +135,7 @@ with left:
     # C. Email + run options
     st.subheader("3 · Delivery")
     email = st.text_input("Email for the report", placeholder="you@fund.com")
-    max_startups = st.slider("Max startups to find", 3, 15, 8)
+    max_startups = st.slider("Max startups to find", 3, 15, 5)
 
     can_run = (len(st.session_state["criteria"].strip()) >= 3 and (selected or custom)
                and EMAIL_RE.match(email or "") and len(custom) <= max_custom)

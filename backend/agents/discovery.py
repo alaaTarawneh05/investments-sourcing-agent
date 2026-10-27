@@ -1,8 +1,9 @@
 """Discovery Agent — scans the market and returns a raw list of candidate startups."""
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 
 from backend.agents.common import Emit, run_agent_streaming
-from backend.config import get_settings
+from backend.config import get_model
 from backend.schemas import DiscoveryResult
 from backend.tools import web_search
 
@@ -23,10 +24,10 @@ Never invent companies — only return names that appear in the search results.
 
 def build_discovery_agent(max_startups: int):
     return create_agent(
-        model=get_settings().llm_model,
+        model=get_model(),
         tools=[web_search],
         system_prompt=SYSTEM_PROMPT.format(max_startups=max_startups),
-        response_format=DiscoveryResult,
+        response_format=ToolStrategy(DiscoveryResult),  # works on every tool-calling model
         name="discovery_agent",
     )
 

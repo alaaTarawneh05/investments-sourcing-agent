@@ -2,9 +2,10 @@
 import asyncio
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 
 from backend.agents.common import Emit, run_agent_streaming
-from backend.config import get_settings
+from backend.config import get_model, get_settings
 from backend.schemas import AttributeValue, StartupCandidate, StartupProfile
 from backend.tools import web_search
 
@@ -28,10 +29,10 @@ def get_deep_dive_agent():
     global _agent
     if _agent is None:  # stateless, so a single compiled agent can serve all parallel runs
         _agent = create_agent(
-            model=get_settings().llm_model,
+            model=get_model(),
             tools=[web_search],
             system_prompt=SYSTEM_PROMPT,
-            response_format=StartupProfile,
+            response_format=ToolStrategy(StartupProfile),  # works on every tool-calling model
             name="deep_dive_agent",
         )
     return _agent
