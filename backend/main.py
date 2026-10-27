@@ -3,7 +3,8 @@
 Endpoints
 - GET  /health                 liveness check
 - GET  /api/attributes         preset data-point list for the UI
-- POST /api/enhance            'Enhance with AI' (structured output)
+- POST /api/chat               chatbot turn (single structured LLM call + fixed steps)
+- POST /api/enhance            'Enhance with AI' (single structured LLM call)
 - POST /api/search/stream      runs the full pipeline and streams progress as Server-Sent Events
 """
 import asyncio
@@ -12,10 +13,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from backend.agents.enhancer import enhance_criteria
+from backend.chat_flow import handle_chat
+from backend.llm.enhance import enhance_criteria
 from backend.pipeline import DONE, EventBus, run_pipeline, sse_format
-from backend.schemas import (MAX_CUSTOM_ATTRIBUTES, PRESET_ATTRIBUTES, EnhancedQuery,
-                             EnhanceRequest, SearchRequest)
+from backend.schemas import (DEFAULT_ATTRIBUTES, MAX_CUSTOM_ATTRIBUTES, PRESET_ATTRIBUTES, ChatRequest,
+                             ChatResponse, EnhancedQuery, EnhanceRequest, SearchRequest)
 
 app = FastAPI(title="Investments Sourcing Agent", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -28,7 +30,12 @@ async def health():
 
 @app.get("/api/attributes")
 async def attributes():
-    return {"preset": PRESET_ATTRIBUTES, "max_custom": MAX_CUSTOM_ATTRIBUTES}
+    return {"preset": PRESET_ATTRIBUTES, "default": DEFAULT_ATTRIBUTES, "max_custom": MAX_CUSTOM_ATTRIBUTES}
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    return await handle_chat(req)
 
 
 @app.post("/api/enhance", response_model=EnhancedQuery)

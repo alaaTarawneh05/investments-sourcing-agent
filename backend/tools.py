@@ -43,3 +43,19 @@ async def web_search(query: str) -> str:
     except Exception as e:  # surface the error to the agent instead of crashing the run
         return f"Search failed: {e}"
     return _format_results(res.results, get_settings().search_snippet_chars)
+
+
+@tool
+async def fetch_page(url: str) -> str:
+    """Read the text of ONE web page with Linkup (e.g. a startup's home, about or team page).
+
+    Use it when search snippets are not enough. Returns the page as markdown (truncated).
+    """
+    client = get_linkup_client()
+    try:
+        res = await client.async_fetch(url=url)
+    except Exception as e:
+        return f"Fetch failed: {e}"
+    text = (res.markdown or "").strip()
+    limit = get_settings().fetch_max_chars
+    return text[:limit] + ("\n…[truncated]" if len(text) > limit else "") if text else "Empty page."

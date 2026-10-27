@@ -14,6 +14,7 @@ class Settings:
     linkup_depth: str = os.getenv("LINKUP_DEPTH", "standard")
     search_max_results: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
     search_snippet_chars: int = int(os.getenv("SEARCH_SNIPPET_CHARS", "500"))
+    fetch_max_chars: int = int(os.getenv("FETCH_MAX_CHARS", "3000"))
 
     sendgrid_api_key: str = os.getenv("SENDGRID_API_KEY", "")
     sendgrid_from_email: str = os.getenv("SENDGRID_FROM_EMAIL", "")

@@ -1,39 +1,63 @@
-"""Streamlit frontend for the Investments Sourcing Agent.
+"""Streamlit CHATBOT frontend for the Investments Sourcing Agent.
 
 Run:  streamlit run frontend/app.py
 """
 import json
 import os
-import re
 
 import requests
 import streamlit as st
+from dotenv import load_dotenv
 
+load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 FALLBACK_PRESETS = ["Company Name", "Year Founded", "Founders", "Website", "Funding Stage", "Location",
                     "Total Funding Raised", "Key Investors", "Employee Count", "Product Description"]
-DEFAULT_SELECTED = ["Company Name", "Year Founded", "Founders", "Website", "Funding Stage", "Location"]
+FALLBACK_DEFAULTS = FALLBACK_PRESETS[:6]
 EXAMPLES = [
     "Infra space for crypto and web3, Saudi presence, Seed stage",
     "Agentic AI in healthcare, $5M+ ARR, Series A or B funding",
-    "Climate-tech carbon accounting SaaS in Europe, pre-seed to seed",
 ]
 
-st.set_page_config(page_title="Investments Sourcing Agent", page_icon="🔭", layout="wide")
+st.set_page_config(page_title="Scout · Investments Sourcing Agent", page_icon="🔭", layout="centered")
 
 
-# ---------------- helpers ----------------
+# ======================= backend helpers =======================
 @st.cache_data(ttl=300)
 def load_presets():
     try:
-        r = requests.get(f"{BACKEND_URL}/api/attributes", timeout=5)
+        d = requests.get(f"{BACKEND_URL}/api/attributes", timeout=5).json()
+        return d["preset"], d.get("default", FALLBACK_DEFAULTS), d["max_custom"]
+    except Exception:
+        return FALLBACK_PRESETS, FALLBACK_DEFAULTS, 20
+
+
+def history_for_llm():
+    return [{"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages if m.get("kind", "text") == "text"][-8:]
+
+
+def call_chat(**payload):
+    """Send one turn to /api/chat and append the assistant's replies."""
+    body = {"state": st.session_state.conv_state, "history": history_for_llm(), **payload}
+    try:
+        r = requests.post(f"{BACKEND_URL}/api/chat", json=body, timeout=120)
         r.raise_for_status()
         d = r.json()
-        return d["preset"], d["max_custom"]
-    except Exception:
-        return FALLBACK_PRESETS, 20
+    except requests.exceptions.ConnectionError:
+        add_msg("assistant", f"⚠️ I can't reach the backend at `{BACKEND_URL}`. "
+                             "Start it with `uvicorn backend.main:app --port 8000`.")
+        return
+    except Exception as e:
+        add_msg("assistant", f"⚠️ Something went wrong: {e}")
+        return
+    st.session_state.conv_state = d["state"]
+    st.session_state.step = d["step"]
+    for m in d["messages"]:
+        add_msg("assistant", m)
+    if d.get("start_search"):
+        st.session_state.run_search = True
 
 
 def iter_sse(response):
@@ -55,158 +79,188 @@ def iter_sse(response):
             data_lines.append(line[5:].lstrip())
 
 
-def enhance_callback():
-    raw = st.session_state.get("criteria", "").strip()
-    if len(raw) < 3:
-        st.session_state["enhance_msg"] = ("warning", "Write some criteria first.")
-        return
-    try:
-        r = requests.post(f"{BACKEND_URL}/api/enhance", json={"criteria": raw}, timeout=90)
-        r.raise_for_status()
-        d = r.json()
-        st.session_state["original_criteria"] = raw
-        st.session_state["criteria"] = d["enhanced_criteria"]  # populate the text area for review
-        st.session_state["enhance_msg"] = ("success", "Criteria enhanced — review & edit before running. "
-                                           f"Keywords: {', '.join(d.get('keywords', []))}")
-    except Exception as e:
-        st.session_state["enhance_msg"] = ("error", f"Enhance failed: {e}")
+# ======================= session state =======================
+def add_msg(role, content, kind="text", data=None):
+    st.session_state.messages.append({"role": role, "content": content, "kind": kind, "data": data})
 
 
-def use_example(text):
-    st.session_state["criteria"] = text
+def queue(user_text, **payload):
+    """Called by buttons / chat input: show the user's bubble now, process on this rerun."""
+    add_msg("user", user_text)
+    st.session_state.pending = payload
 
 
-def revert_callback():
-    if "original_criteria" in st.session_state:
-        st.session_state["criteria"] = st.session_state.pop("original_criteria")
-        st.session_state.pop("enhance_msg", None)
+ss = st.session_state
+ss.setdefault("messages", [])
+ss.setdefault("conv_state", {})
+ss.setdefault("step", "criteria")
+ss.setdefault("pending", None)
+ss.setdefault("run_search", False)
+presets, defaults, max_custom = load_presets()
+
+if not ss.messages:
+    call_chat(action="init")
 
 
-def profiles_to_rows(profiles):
+# ======================= render conversation =======================
+st.title("🔭 Scout")
+st.caption("Your investment sourcing chatbot — live web search · parallel research agents · email report")
+
+
+def render_results(data):
     rows = []
-    for p in profiles:
+    for p in data["profiles"]:
         row = {a["attribute"]: a["value"] for a in p["attributes"]}
         row["Summary"] = p.get("summary", "")
         rows.append(row)
-    return rows
+    st.dataframe(rows, width="stretch", hide_index=True)
+    st.download_button("⬇️ Download JSON", json.dumps(data["profiles"], indent=2), "startups.json",
+                       "application/json", key=f"dl_{id(data)}")
 
 
-# ---------------- UI ----------------
-st.session_state.setdefault("criteria", "")
-presets, max_custom = load_presets()
+for m in ss.messages:
+    with st.chat_message(m["role"], avatar="🔭" if m["role"] == "assistant" else "🧑"):
+        if m["kind"] == "progress":
+            with st.expander(m["content"], expanded=False):
+                st.markdown("\n\n".join(m["data"]))
+        elif m["kind"] == "results":
+            st.markdown(m["content"])
+            render_results(m["data"])
+        else:
+            st.markdown(m["content"])
 
-st.title("🔭 Investments Sourcing Agent")
-st.caption("Describe your thesis → the agent scans the market with live web search, "
-           "deep-dives every startup in parallel, and emails you the report.")
-
-left, right = st.columns([1.05, 1], gap="large")
-
-with left:
+# ======================= process a pending turn =======================
+if ss.pending is not None:
+    payload, ss.pending = ss.pending, None
     with st.chat_message("assistant", avatar="🔭"):
-        st.markdown("Hi! Tell me what kind of startups you're looking for, which data points you need, "
-                    "and where to send the report.")
+        with st.spinner("Scout is typing…"):
+            call_chat(**payload)
+    st.rerun()
 
-    # A. Search criteria
-    st.subheader("1 · Search criteria")
-    st.markdown("**Examples** — click to use:")
-    ex_cols = st.columns(len(EXAMPLES))
-    for col, ex in zip(ex_cols, EXAMPLES):
-        col.button(ex, on_click=use_example, args=(ex,), use_container_width=True)
 
-    st.text_area("Investment thesis & criteria", key="criteria", height=150,
-                 placeholder="e.g. Agentic AI in healthcare, $5M+ ARR, Series A or B funding")
-    b1, b2 = st.columns([1, 1])
-    b1.button("✨ Enhance with AI", on_click=enhance_callback, use_container_width=True)
-    b2.button("↩️ Revert to original", on_click=revert_callback, use_container_width=True,
-              disabled="original_criteria" not in st.session_state)
-    if msg := st.session_state.get("enhance_msg"):
-        getattr(st, msg[0])(msg[1])
-
-    # B. Data collection
-    st.subheader("2 · Data to collect")
-    selected = st.multiselect("Preset attributes", presets,
-                              default=[a for a in DEFAULT_SELECTED if a in presets])
-    custom_raw = st.text_input(f"Custom attributes (comma-separated, up to {max_custom})",
-                               placeholder="e.g. ARR, Customers, Tech stack, Regulatory approvals")
-    custom = [c.strip() for c in custom_raw.split(",") if c.strip()]
-    if len(custom) > max_custom:
-        st.error(f"You entered {len(custom)} custom attributes — the maximum is {max_custom}.")
-
-    # C. Email + run options
-    st.subheader("3 · Delivery")
-    email = st.text_input("Email for the report", placeholder="you@fund.com")
-    max_startups = st.slider("Max startups to find", 3, 15, 5)
-
-    can_run = (len(st.session_state["criteria"].strip()) >= 3 and (selected or custom)
-               and EMAIL_RE.match(email or "") and len(custom) <= max_custom)
-    run = st.button("🚀 Find startups & email report", type="primary",
-                    use_container_width=True, disabled=not can_run)
-    if not can_run:
-        st.caption("Fill in criteria, at least one attribute and a valid email to start.")
-
-with right:
-    st.subheader("Agent activity")
-    activity = st.container(height=420, border=True)
-    board_ph = st.empty()
-    results_ph = st.container()
-
-    if run:
-        payload = {"criteria": st.session_state["criteria"], "attributes": selected,
-                   "custom_attributes": custom, "email": email, "max_startups": max_startups}
+# ======================= live search (SSE) =======================
+def run_search():
+    s = ss.conv_state
+    payload = {"criteria": s["criteria"], "attributes": s.get("attributes", []),
+               "custom_attributes": s.get("custom_attributes", []), "email": s["email"]}
+    log: list[str] = []
+    final = None
+    with st.chat_message("assistant", avatar="🔭"):
+        status = st.status("📡 Scanning market…", expanded=True)
+        progress = st.progress(0.0)
         companies: dict[str, str] = {}
-        progress = st.progress(0.0, text="Starting…")
-        status = st.status("Agent working…", expanded=False, state="running")
-
-        def render_board():
-            if companies:
-                icons = {"queued": "⏳", "analyzing": "🧠", "done": "✅", "warning": "⚠️"}
-                board_ph.markdown("**Startups**\n\n" + "\n".join(
-                    f"- {icons.get(s, '•')} {n} — *{s}*" for n, s in companies.items()))
-
         try:
             with requests.post(f"{BACKEND_URL}/api/search/stream", json=payload,
                                stream=True, timeout=(10, 900)) as resp:
                 if resp.status_code != 200:
-                    st.error(f"Backend error {resp.status_code}: {resp.text}")
-                    st.stop()
+                    status.update(label=f"Backend error {resp.status_code}", state="error")
+                    log.append(f"❌ {resp.text}")
                 for event, data in iter_sse(resp):
                     msg = data.get("message", "")
-                    if event == "search":
-                        activity.caption(msg)
-                    elif event in ("status", "analyzing", "company_done", "discovered"):
-                        activity.write(msg)
+                    if event in ("search",):
+                        status.caption(msg)
+                        log.append(msg)
+                    elif event in ("status", "discovered", "analyzing", "company_done", "warning", "error"):
+                        status.write(msg)
                         status.update(label=msg)
-                    elif event == "warning":
-                        activity.warning(msg)
-                    elif event == "error":
-                        activity.error(msg)
-                        status.update(label=msg, state="error")
-
+                        log.append(msg)
                     if event == "discovered":
-                        for s in data["startups"]:
-                            companies[s["name"]] = "queued"
-                        progress.progress(0.15, text=msg)
-                    elif event == "analyzing":
-                        companies[data["company"]] = "analyzing"
+                        companies = {c["name"]: "queued" for c in data["startups"]}
+                        if companies:
+                            status.write("🏢 " + ", ".join(companies))
+                        progress.progress(0.15)
                     elif event == "company_done":
                         companies[data["company"]] = "done"
                         done = sum(v == "done" for v in companies.values())
                         progress.progress(0.15 + 0.8 * done / max(len(companies), 1),
                                           text=f"Analyzed {done}/{len(companies)} startups")
+                    elif event == "error":
+                        status.update(label=msg, state="error")
                     elif event == "complete":
-                        progress.progress(1.0, text=msg)
-                        status.update(label=msg, state="complete" if data["email_sent"] else "error")
-                        with results_ph:
-                            st.subheader("Results")
-                            st.dataframe(profiles_to_rows(data["profiles"]), use_container_width=True)
-                            if data["email_sent"]:
-                                st.success(f"Report sent to {email} 📬")
-                            else:
-                                st.warning(f"Email not sent: {data['email_error']}")
-                            st.download_button("Download JSON", json.dumps(data["profiles"], indent=2),
-                                               "startups.json", "application/json")
-                    render_board()
+                        final = data
+                        progress.progress(1.0)
+                        status.update(label=msg, state="complete", expanded=False)
         except requests.exceptions.ConnectionError:
-            st.error(f"Cannot reach the backend at {BACKEND_URL}. Is `uvicorn backend.main:app` running?")
+            log.append(f"❌ Cannot reach the backend at {BACKEND_URL}.")
+            status.update(label="Backend not reachable", state="error")
+
+    add_msg("assistant", f"🧾 Agent activity log ({len(log)} steps)", kind="progress", data=log or ["(empty)"])
+    if final:
+        n = len(final["profiles"])
+        if final["email_sent"]:
+            text = f"🎉 Done! I found **{n} startups** and emailed the report to **{payload['email']}** 📬"
+        else:
+            text = f"I found **{n} startups**, but the email failed: `{final['email_error']}`"
+        add_msg("assistant", text, kind="results", data=final)
+        add_msg("assistant", "Want to run another search? Click **New search** or just tell me what you're "
+                             "looking for.")
     else:
-        activity.caption("Progress will stream here in real time once you start a search.")
+        add_msg("assistant", "The search didn't complete. Check the activity log above, then try again.")
+    ss.step = "done"
+
+
+if ss.run_search:
+    ss.run_search = False
+    run_search()
+    st.rerun()
+
+
+# ======================= step-specific quick actions =======================
+step = ss.step
+with st.container():
+    if step == "criteria":
+        st.caption("Try an example:")
+        for i, ex in enumerate(EXAMPLES):
+            st.button(ex, key=f"ex{i}", on_click=queue, args=(ex,), kwargs={"message": ex},
+                      width="stretch")
+
+    elif step == "enhance":
+        c1, c2 = st.columns(2)
+        c1.button("✨ Enhance with AI", on_click=queue, args=("✨ Enhance with AI",),
+                  kwargs={"action": "enhance"}, width="stretch", type="primary")
+        c2.button("Keep as is", on_click=queue, args=("Keep as is",), kwargs={"action": "keep"},
+                  width="stretch")
+
+    elif step == "enhance_review":
+        c1, c2 = st.columns(2)
+        c1.button("✅ Use enhanced", on_click=queue, args=("Use the enhanced version",),
+                  kwargs={"action": "use_enhanced"}, width="stretch", type="primary")
+        c2.button("↩️ Use my original", on_click=queue, args=("Use my original",),
+                  kwargs={"action": "use_original"}, width="stretch")
+
+    elif step == "attributes":
+        with st.form("attrs", border=True):
+            picked = st.multiselect("Preset data points", presets, default=defaults)
+            custom_raw = st.text_input(f"Custom data points (comma-separated, max {max_custom})",
+                                       placeholder="ARR, Number of customers, Tech stack")
+            if st.form_submit_button("Confirm data points", type="primary", width="stretch"):
+                custom = [c.strip() for c in custom_raw.split(",") if c.strip()]
+                if len(custom) > max_custom:
+                    st.error(f"Max {max_custom} custom data points (you entered {len(custom)}).")
+                elif not (picked or custom):
+                    st.error("Pick at least one data point.")
+                else:
+                    queue("Collect: " + ", ".join([*picked, *custom]), action="set_attributes",
+                          attributes=picked, custom_attributes=custom)
+                    st.rerun()
+
+    elif step == "confirm":
+        c1, c2 = st.columns(2)
+        if c1.button("🚀 Start search", width="stretch", type="primary"):
+            add_msg("user", "🚀 Start search")
+            add_msg("assistant", "🚀 Starting the search now…")
+            ss.run_search = True
+            st.rerun()
+        c2.button("🔄 Start over", on_click=queue, args=("Start over",), kwargs={"action": "reset"},
+                  width="stretch")
+
+    elif step == "done":
+        st.button("🔄 New search", on_click=queue, args=("New search",), kwargs={"action": "reset"},
+                  width="stretch", type="primary")
+
+# ======================= free-text chat input (always available) =======================
+if prompt := st.chat_input("Message Scout…"):
+    if ss.step == "done":  # a new message after a finished search starts a fresh conversation
+        ss.conv_state, ss.step = {}, "criteria"
+    queue(prompt, message=prompt)
+    st.rerun()

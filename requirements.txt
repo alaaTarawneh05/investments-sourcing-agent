@@ -11,5 +11,5 @@ langchain-openai>=1.0         # OpenAI (optional, paid)
 linkup-sdk>=0.2.4
 sendgrid>=6.11
 # Frontend
-streamlit>=1.40
+streamlit>=1.50
 requests>=2.32

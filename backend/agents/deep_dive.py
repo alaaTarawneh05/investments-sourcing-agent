@@ -7,14 +7,15 @@ from langchain.agents.structured_output import ToolStrategy
 from backend.agents.common import Emit, run_agent_streaming
 from backend.config import get_model, get_settings
 from backend.schemas import AttributeValue, StartupCandidate, StartupProfile
-from backend.tools import web_search
+from backend.tools import fetch_page, web_search
 
 SYSTEM_PROMPT = """You are a due-diligence research analyst.
 You research ONE startup and collect specific data points about it.
 
 Rules:
-- Use the web_search tool (2-5 targeted searches: company site, funding news, Crunchbase/LinkedIn style
-  sources, founder names).
+- Use web_search for 2-4 targeted searches (funding news, Crunchbase/LinkedIn style sources, founders).
+- Use fetch_page at most 1-2 times to read the company's own website (home / about / team page) when it
+  helps with founders, founding year, product or location.
 - Return exactly one entry per requested attribute, using the attribute name EXACTLY as given and in
   the same order.
 - Values must be concise (a few words to one sentence). Include a source_url when possible.
@@ -30,7 +31,7 @@ def get_deep_dive_agent():
     if _agent is None:  # stateless, so a single compiled agent can serve all parallel runs
         _agent = create_agent(
             model=get_model(),
-            tools=[web_search],
+            tools=[web_search, fetch_page],
             system_prompt=SYSTEM_PROMPT,
             response_format=ToolStrategy(StartupProfile),  # works on every tool-calling model
             name="deep_dive_agent",
@@ -64,7 +65,7 @@ async def deep_dive_one(startup: StartupCandidate, attributes: list[str], criter
 
     async def on_search(query: str):
         await emit("search", {"agent": "deep_dive", "company": startup.name, "query": query,
-                              "message": f"   ↳ [{startup.name}] searching: {query}"})
+                              "message": f"   ↳ [{startup.name}] " + (query if query.startswith("📄") else f"searching: {query}")})
 
     attr_list = "\n".join(f"- {a}" for a in attributes)
     prompt = (

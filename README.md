@@ -1,130 +1,177 @@
-# 🔭 Investments Sourcing Agent (LangChain)
+# 🔭 Scout: Investments Sourcing Agent (LangChain)
 
-An AI scout for startup investments. You describe an investment thesis in a Streamlit chat-style form. A **LangChain Discovery Agent** scans the live web through **Linkup**, then **Deep-Dive sub-agents run in parallel** (one per startup) to collect the data points you asked for. The results are emailed to you as a formatted table through **SendGrid**. Progress streams to the UI in real time over **Server-Sent Events (SSE)** from a **FastAPI** backend.
+A **chatbot** that scouts startups to invest in. You chat with Scout and tell it your investment thesis, the data points you want, and your email. It then:
+
+1. runs a **Discovery agent** that searches the live web with **Linkup** to find matching startups,
+2. runs one **Deep Dive agent per startup, in parallel**, to collect the data points you asked for,
+3. emails you a formatted report with **SendGrid**.
+
+Every step streams live into the chat through **Server-Sent Events (SSE)** from a **FastAPI** backend.
+
+**Stack:** Streamlit (chat UI) · FastAPI (backend) · LangChain v1 `create_agent` · Groq (free LLM) · Linkup (search) · SendGrid (email)
+
+---
+
+## How it works
 
 ```
-┌──────────────┐  POST /api/enhance            ┌────────────────────────────────────────────┐
-│  Streamlit   │ ────────────────────────────▶ │ FastAPI                                    │
-│  frontend    │                               │                                            │
-│              │  POST /api/search/stream      │  Enhancer agent (structured output)        │
-│  • criteria  │ ────────────────────────────▶ │                                            │
-│  • attributes│ ◀──── SSE events ──────────── │  Discovery agent ──web_search──▶ Linkup    │
-│  • email     │  status / search / discovered │        │ DiscoveryResult (JSON)            │
-│  • live log  │  analyzing / company_done /   │        ▼                                   │
-│              │  complete / error             │  Deep-dive agents ×N (asyncio.gather)      │
-└──────────────┘                               │        │ StartupProfile (JSON) each        │
-                                               │        ▼                                   │
-                                               │  HTML report ──▶ SendGrid ──▶ 📬           │
-                                               └────────────────────────────────────────────┘
+┌─────────────────────┐  POST /api/chat (each message / button)   ┌───────────────────────────────────────┐
+│ Streamlit CHAT      │ ────────────────────────────────────────▶ │ FastAPI                               │
+│ st.chat_message     │                                           │  chat_flow.py  (fixed steps)          │
+│ st.chat_input       │ ◀──────────── replies + state ─────────── │   └ chat LLM call  (reply + extract)  │
+│ quick-reply buttons │                                           │   └ enhance LLM call                  │
+│                     │  POST /api/search/stream                  │                                       │
+│ live progress       │ ────────────────────────────────────────▶ │  pipeline.py                          │
+│                     │ ◀──── SSE: search / discovered / ──────── │   ├ Agent 1: Discovery  ─▶ Linkup     │
+│ results table       │       analyzing / company_done /          │   ├ Agent 2: Deep Dive ×N (parallel)  │
+└─────────────────────┘       complete                            │   │      ─▶ Linkup search + fetch     │
+                                                                  │   └ HTML report ─▶ SendGrid 📬        │
+                                                                  └───────────────────────────────────────┘
 ```
 
-## Features
-
-| Requirement | Implementation |
+### Conversation steps
+| Step | What happens |
 |---|---|
-| Chatbot-based single-page UI | `frontend/app.py`: Streamlit page with chat greeting, criteria, attributes, email, and a live activity panel |
-| Example prompts | Clickable example buttons that fill the criteria box |
-| **Enhance with AI** | `POST /api/enhance` runs a LangChain agent with `response_format=EnhancedQuery` and writes the refined text back into the text area for review (with a *Revert* button) |
-| Preset + up to 20 custom attributes | Multiselect + comma-separated input, validated on both the frontend and the backend (`SearchRequest`) |
-| Linkup web search | `backend/tools.py`: async `@tool web_search` using `LinkupClient.async_search` |
-| Discovery agent | `backend/agents/discovery.py`: `create_agent(..., tools=[web_search], response_format=DiscoveryResult)` |
-| Parallel deep-dive agents | `backend/agents/deep_dive.py`: one agent run per startup, run with `asyncio.gather` and a semaphore (`DEEP_DIVE_CONCURRENCY`) |
-| Structured outputs (JSON) | Every agent returns a Pydantic schema (`EnhancedQuery`, `DiscoveryResult`, `StartupProfile`). Results are then normalized so every startup has exactly one value per requested attribute, in order |
-| Email report | `backend/email_service.py`: HTML table + analyst summaries, sent with SendGrid |
-| Real-time UI (SSE) | `POST /api/search/stream` returns `text/event-stream`. The agents stream their tool calls (`agent.astream(stream_mode="values")`) so the UI shows each search query, "Found N companies", "Analyzing X", and so on |
+| **Greeting** | Scout introduces itself and shows example criteria (clickable) |
+| **Criteria** | You describe the startups you want. Scout replies to *anything* ("hi", questions, off-topic) and steers back |
+| **Enhance** | Buttons **✨ Enhance with AI** / **Keep as is**. The enhanced version is shown for review → **Use enhanced** / **Use my original** (or type a new version) |
+| **Data points** | Pick presets in the picker and add up to **20 custom** ones, or just type, e.g. *"the defaults plus ARR and number of customers"* |
+| **Email** | Type your email (it's validated) |
+| **Confirm** | Summary → **🚀 Start search** (or type "start"), or tell Scout what to change |
+| **Search** | Live progress in the chat: *Scanning market… → Searching: … → Found 5 companies → Analyzing X… → Finished X → Report emailed* |
+| **Results** | Results table in the chat + **Download JSON** + **New search** |
+
+You can also give several things at once, e.g. *"fintech in Egypt, seed, collect founders and ARR, send to me@x.com"*. Scout picks up everything and only asks for what's missing.
+
+### AI components
+| Component | Type | LangChain | Output (structured JSON) |
+|---|---|---|---|
+| Chat brain (`backend/llm/chat.py`) | single LLM call per message | `model.with_structured_output(ChatExtraction)` | `reply`, `intent`, `criteria`, `attributes`, `email` |
+| Enhance (`backend/llm/enhance.py`) | single LLM call | `model.with_structured_output(EnhancedQuery)` | `enhanced_criteria`, `keywords` |
+| **Agent 1: Discovery** (`backend/agents/discovery.py`) | agent | `create_agent(tools=[web_search], response_format=ToolStrategy(DiscoveryResult))` | list of `{name, website, one_liner, why_match}` |
+| **Agent 2: Deep Dive ×N** (`backend/agents/deep_dive.py`) | agent, one copy per startup, run with `asyncio.gather` | `create_agent(tools=[web_search, fetch_page], response_format=ToolStrategy(StartupProfile))` | `{company_name, attributes:[{attribute, value, source_url}], summary}` |
+
+**Tools** (`backend/tools.py`, LangChain `@tool`):
+- `web_search(query)`: Linkup search; returns titles, URLs and snippets.
+- `fetch_page(url)`: Linkup fetch; reads one page, e.g. the startup's own website (Deep Dive only).
+
+---
 
 ## Project structure
-
 ```
 investments-sourcing-agent/
 ├── backend/
-│   ├── main.py            # FastAPI app + SSE endpoint
-│   ├── pipeline.py        # discovery → parallel deep dives → email; EventBus for SSE
-│   ├── schemas.py         # Pydantic request + structured-output schemas
-│   ├── tools.py           # Linkup web_search LangChain tool
-│   ├── email_service.py   # HTML report + SendGrid sender
-│   ├── config.py          # env settings
+│   ├── main.py            # FastAPI: /api/chat, /api/enhance, /api/search/stream (SSE)
+│   ├── chat_flow.py       # chatbot steps + state handling
+│   ├── pipeline.py        # Discovery → parallel Deep Dives → email, emits SSE events
+│   ├── schemas.py         # all Pydantic schemas (API + structured outputs)
+│   ├── tools.py           # Linkup web_search + fetch_page tools
+│   ├── email_service.py   # HTML report + SendGrid
+│   ├── config.py          # .env settings + shared LLM (with retries)
+│   ├── llm/
+│   │   ├── chat.py        # chat LLM call (reply + extraction) + no-LLM fallback
+│   │   └── enhance.py     # "Enhance with AI" LLM call
 │   └── agents/
-│       ├── enhancer.py    # "Enhance with AI"
-│       ├── discovery.py   # Discovery agent
-│       ├── deep_dive.py   # Deep-dive sub-agents (parallel)
-│       └── common.py      # streaming runner that reports tool calls
+│       ├── discovery.py   # Agent 1
+│       ├── deep_dive.py   # Agent 2 (parallel)
+│       └── common.py      # runs an agent and streams its tool calls
 ├── frontend/
-│   └── app.py             # Streamlit UI
+│   └── app.py             # Streamlit chatbot
 ├── requirements.txt
 ├── .env.example
 └── README.md
 ```
 
+---
+
 ## Setup
 
-**Prerequisites:** Python 3.10+, plus API keys for an LLM (free **Groq** by default; Gemini or OpenAI also work), Linkup, and SendGrid.
+### 1. Requirements
+- Python **3.10+**
+- 3 free API keys:
 
+| Key | Get it from |
+|---|---|
+| `GROQ_API_KEY` | https://console.groq.com/keys |
+| `LINKUP_API_KEY` | provided with the assignment, or https://linkup.so |
+| `SENDGRID_API_KEY` | https://app.sendgrid.com → Settings → API Keys |
+
+You also need a **verified sender email** in SendGrid: Settings → Sender Authentication → *Verify a Single Sender*.
+
+### 2. Install
 ```bash
-git clone <your-repo-url> investments-sourcing-agent
 cd investments-sourcing-agent
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# Mac / Linux:
+source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env    # then fill in the keys
 ```
 
-### `.env` keys
+### 3. Configure
+Copy `.env.example` to `.env` and fill in:
+```
+GROQ_API_KEY=gsk_...
+LINKUP_API_KEY=...
+SENDGRID_API_KEY=SG....
+SENDGRID_FROM_EMAIL=your-verified-email@gmail.com
+```
 
-| Variable | Description |
-|---|---|
-| `GROQ_API_KEY` | Free Groq key from https://console.groq.com/keys (default model) |
-| `GOOGLE_API_KEY` / `OPENAI_API_KEY` | Only if you switch `LLM_MODEL` to Gemini or OpenAI |
-| `LLM_MODEL` | Any LangChain `provider:model` string, default `groq:llama-3.3-70b-versatile`; free alternatives `groq:meta-llama/llama-4-scout-17b-16e-instruct` (higher token limit), `google_genai:gemini-3.6-flash`; paid `openai:gpt-4o-mini` |
-| `LINKUP_API_KEY` | Linkup API key |
-| `LINKUP_DEPTH` | `fast`, `standard` or `deep` (deep is slower and more thorough) |
-| `SENDGRID_API_KEY` | SendGrid API key (Free Tier works) |
-| `SENDGRID_FROM_EMAIL` | A **verified sender** in SendGrid (Settings → Sender Authentication) |
-| `MAX_STARTUPS` | Default number of startups to find (the UI slider overrides it) |
-| `DEEP_DIVE_CONCURRENCY` | How many deep-dive agents run at the same time (keep 1-2 on free tiers) |
-| `SEARCH_MAX_RESULTS` / `SEARCH_SNIPPET_CHARS` | Size of each search result sent to the LLM; lower these if you hit token-per-minute limits |
-| `BACKEND_URL` | Used by the frontend (default `http://localhost:8000`) |
+Optional settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLM_MODEL` | `groq:llama-3.3-70b-versatile` | Any LangChain `provider:model` string, e.g. `groq:meta-llama/llama-4-scout-17b-16e-instruct`, `google_genai:gemini-3.6-flash`, `openai:gpt-4o-mini` |
+| `MAX_STARTUPS` | 5 | Startups to find per search |
+| `DEEP_DIVE_CONCURRENCY` | 2 | Deep Dive agents running at the same time |
+| `LINKUP_DEPTH` | standard | `fast` / `standard` / `deep` |
+| `SEARCH_MAX_RESULTS`, `SEARCH_SNIPPET_CHARS`, `FETCH_MAX_CHARS` | 5 / 500 / 3000 | How much web text goes to the LLM (lower = fewer tokens) |
 
 ## Run
-
-Use two terminals, both from the project root with the venv active:
+Open **two terminals** in the project folder, both with the venv activated:
 
 ```bash
-# 1) Backend
+# Terminal 1: backend
 uvicorn backend.main:app --reload --port 8000
 
-# 2) Frontend
+# Terminal 2: frontend
 streamlit run frontend/app.py
 ```
+Open **http://localhost:8501** and say hi to Scout 👋. The API docs are at http://localhost:8000/docs.
 
-Open http://localhost:8501. API docs are at http://localhost:8000/docs.
-
-### Using it
-1. Type a thesis, or click an example → optionally click **✨ Enhance with AI** and review the result.
-2. Pick preset attributes and add custom ones (comma-separated, max 20).
-3. Enter your email → **🚀 Find startups & email report**.
-4. Watch the live activity panel. When the run finishes, the results table appears and the report arrives in your inbox (check spam the first time).
+---
 
 ## API
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | health check |
+| GET | `/api/attributes` | preset + default data points |
+| POST | `/api/chat` | one chat turn: `{message?, action?, state, history}` → `{messages, state, step, start_search}` |
+| POST | `/api/enhance` | `{criteria}` → `{enhanced_criteria, keywords}` |
+| POST | `/api/search/stream` | `{criteria, attributes, custom_attributes, email, max_startups?}` → **SSE stream** |
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| GET | `/health` | – | `{"status":"ok"}` |
-| GET | `/api/attributes` | – | preset attribute list |
-| POST | `/api/enhance` | `{"criteria": str}` | `{"enhanced_criteria": str, "keywords": [str]}` |
-| POST | `/api/search/stream` | `{"criteria", "attributes": [str], "custom_attributes": [str], "email", "max_startups"?}` | SSE stream |
+SSE event types: `status`, `search`, `discovered`, `analyzing`, `company_done`, `warning`, `error`, `complete`, `end`.
 
-You can try the stream with curl:
 ```bash
-curl -N -X POST localhost:8000/api/search/stream -H 'Content-Type: application/json' \
-  -d '{"criteria":"Agentic AI in healthcare, Series A","attributes":["Company Name","Founders","Website"],"email":"you@x.com","max_startups":3}'
+curl -N -X POST localhost:8000/api/search/stream -H "Content-Type: application/json" \
+  -d '{"criteria":"Agentic AI in healthcare, Series A","attributes":["Company Name","Founders"],"email":"you@x.com","max_startups":3}'
 ```
 
-### SSE event types
-`status` (stage change) · `search` (an agent's web query) · `discovered` (candidate list) · `analyzing` / `company_done` (per startup, with the profile) · `warning` · `error` · `complete` (all profiles + email status) · `end`.
+---
 
 ## Design notes
-- **Agents:** built with LangChain v1 `create_agent` ([docs](https://docs.langchain.com/oss/python/langchain/agents)). Each agent pairs `tools=[web_search]` with a Pydantic `response_format`, so the final answer arrives as a validated `structured_response`.
-- **Live progress:** `run_agent_streaming` iterates `agent.astream(stream_mode="values")` and sends an event the first time each `web_search` tool call appears.
-- **Parallelism:** the deep-dive agent is stateless, so one compiled agent serves all concurrent `ainvoke`/`astream` calls. A semaphore caps concurrency to respect rate limits.
-- **Resilience:** a failed deep dive doesn't break the run. That startup is reported with "Not found" values plus a warning event. If the email fails, the results still show in the UI.
-- **Consistency:** `_normalize` makes every profile have exactly the requested attributes, in the requested order, so the email table always lines up.
+- **Structured outputs everywhere.** Every LLM call and agent returns a Pydantic schema, which controls the flow (chat intent, current step) and keeps the data consistent. Deep Dive results are normalized, so each startup has exactly the requested attributes, in order, with `"Not found"` instead of guesses.
+- **Parallel Deep Dives.** `asyncio.gather` with a semaphore (`DEEP_DIVE_CONCURRENCY`) to stay inside free-tier rate limits.
+- **Live progress.** Agents run with `agent.astream(stream_mode="values")`. Every `web_search` / `fetch_page` call is turned into an SSE event while it happens.
+- **Free-tier friendly.** The LLM retries automatically on 429 errors (`max_retries=6`). Search snippets are trimmed. If the chat LLM fails, a simple rule-based fallback keeps the conversation moving.
+- **Resilient.** A failed Deep Dive or email doesn't crash the run. You still see the results in the chat, with a warning.
+
+## Troubleshooting
+| Problem | Fix |
+|---|---|
+| "I can't reach the backend" | Start terminal 1 (`uvicorn …`) |
+| `ModuleNotFoundError: backend` | Run commands from the project root folder |
+| Groq `429 rate limit` | Set `DEEP_DIVE_CONCURRENCY=1`, lower `MAX_STARTUPS`, or use `groq:meta-llama/llama-4-scout-17b-16e-instruct` |
+| SendGrid `403` | `SENDGRID_FROM_EMAIL` isn't verified |
+| No email arrived | Check your spam folder |
