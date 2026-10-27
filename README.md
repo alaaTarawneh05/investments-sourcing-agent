@@ -58,7 +58,7 @@ investments-sourcing-agent/
 
 ## Setup
 
-**Prerequisites:** Python 3.10+, plus API keys for an LLM (OpenAI by default), Linkup, and SendGrid.
+**Prerequisites:** Python 3.10+, plus API keys for an LLM (free Google Gemini by default; Groq or OpenAI also work), Linkup, and SendGrid.
 
 ```bash
 git clone <your-repo-url> investments-sourcing-agent
@@ -72,8 +72,9 @@ cp .env.example .env    # then fill in the keys
 
 | Variable | Description |
 |---|---|
-| `OPENAI_API_KEY` | Key for the default model |
-| `LLM_MODEL` | Any LangChain `provider:model` string, e.g. `openai:gpt-4o-mini`, `openai:gpt-4.1`, `anthropic:claude-sonnet-4-5` (install that provider's package, e.g. `langchain-anthropic`, and set its key) |
+| `GOOGLE_API_KEY` | Free Gemini key from https://aistudio.google.com/apikey (default model) |
+| `GROQ_API_KEY` / `OPENAI_API_KEY` | Only if you switch `LLM_MODEL` to Groq or OpenAI |
+| `LLM_MODEL` | Any LangChain `provider:model` string, default `google_genai:gemini-3.6-flash`; free alternative `groq:llama-3.3-70b-versatile`; paid `openai:gpt-4o-mini` |
 | `LINKUP_API_KEY` | Linkup API key |
 | `LINKUP_DEPTH` | `fast`, `standard` or `deep` (deep is slower and more thorough) |
 | `SENDGRID_API_KEY` | SendGrid API key (Free Tier works) |
