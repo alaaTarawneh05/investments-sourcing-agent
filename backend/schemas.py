@@ -5,7 +5,7 @@ These are used both as FastAPI request/response models and as LangChain
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 PRESET_ATTRIBUTES = [
     "Company Name",
@@ -18,20 +18,19 @@ PRESET_ATTRIBUTES = [
     "Key Investors",
     "Employee Count",
     "Product Description",
+    "Contact Info",
 ]
 MAX_CUSTOM_ATTRIBUTES = 20
 
 
 # ---------- API requests ----------
-class EnhanceRequest(BaseModel):
-    criteria: str = Field(..., min_length=3)
-
-
 class SearchRequest(BaseModel):
-    criteria: str = Field(..., min_length=3)
+    mode: Literal["list", "research", "lookup"] = "research"
+    criteria: str = Field(..., min_length=2)
     attributes: list[str] = Field(default_factory=list)
     custom_attributes: list[str] = Field(default_factory=list)
-    max_startups: Optional[int] = Field(default=None, ge=1, le=20)
+    max_startups: Optional[int] = Field(default=None, ge=1, le=25)
+    companies: list[dict] = Field(default_factory=list)  # lookup mode: [{"name", "website", "one_liner"}]
 
     @field_validator("custom_attributes")
     @classmethod
@@ -43,7 +42,7 @@ class SearchRequest(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_attribute(self):
-        if not self.all_attributes():
+        if self.mode != "list" and not self.all_attributes():
             raise ValueError("Pick at least one attribute")
         return self
 
@@ -95,23 +94,72 @@ class StartupProfile(BaseModel):
     attributes: list[AttributeValue] = Field(
         description="One entry per requested attribute, in the requested order"
     )
-    summary: str = Field(description="2-3 sentence investment-oriented summary")
+    summary: str = Field(description="3-4 sentence investment-oriented overview of the company")
+    strengths: list[str] = Field(default_factory=list,
+                                 description="2-3 short investment strengths, based on the research")
+    risks: list[str] = Field(default_factory=list,
+                             description="1-3 short risks or open questions an investor should check")
 
 
-# ---------- Chatbot ----------
-DEFAULT_ATTRIBUTES = ["Company Name", "Year Founded", "Founders", "Website", "Funding Stage", "Location"]
-Step = Literal["criteria", "enhance", "enhance_review", "attributes", "confirm"]
+class RankedStartup(BaseModel):
+    name: str
+    reason: str = Field(description="One sentence on why it ranks here")
+
+
+class ReportOverview(BaseModel):
+    """LLM-written parts of the final report (the data tables are built in code)."""
+
+    title: str = Field(description="Short report title, e.g. 'Seed-stage fintech in Jordan & MENA'")
+    executive_summary: str = Field(description="4-6 sentences: what was searched, what was found, overall view")
+    key_takeaways: list[str] = Field(description="3-5 short bullet takeaways for an investor")
+    ranking: list[RankedStartup] = Field(description="All startups ranked by fit with the criteria, best first")
+
+
+# ---------- Chatbot + Supervisor ----------
+DEFAULT_ATTRIBUTES = ["Company Name", "Year Founded", "Founders", "Website", "Funding Stage", "Location",
+                      "Total Funding Raised", "Key Investors"]
+Step = Literal["idle", "criteria", "count", "attributes", "confirm"]
+
+# Every kind of request the Supervisor can route to
+Route = Literal[
+    "chat",              # greetings, thanks, small talk, questions about Scout, off-topic (linked back to startups)
+    "find_list",         # "give me names of ..." -> Discovery agent ONLY (cheap)
+    "research",          # full job: Discovery + Deep Dive agents + detailed report
+    "company_lookup",    # user names specific companies -> Deep Dive ONLY (no discovery)
+    "research_previous", # "tell me more about #2 / those two" -> Deep Dive on startups from the last results
+    "follow_up",         # question answerable from previous results -> answered directly, no tools ($0)
+    "quick_answer",      # general market / fact question -> 1-2 web searches + short answer
+    "confirm",           # user says yes to a pending plan
+    "cancel",            # user says stop / never mind
+    "reset",             # user wants a brand-new search
+    "decline",           # harmful / not allowed -> polite refusal
+]
+
+
+class MemoryStartup(BaseModel):
+    """Compact memory of a startup from a previous answer (so follow-ups don't need new searches)."""
+
+    name: str
+    website: Optional[str] = None
+    one_liner: str = ""
+    facts: str = ""  # short "key: value; key: value" summary of researched data
 
 
 class ConversationState(BaseModel):
-    """Everything the chatbot has collected so far (kept by the frontend, sent each turn)."""
+    """What the chatbot knows (kept by the frontend, sent with every message)."""
 
+    pending_route: Optional[Literal["find_list", "research", "company_lookup", "research_previous"]] = None
+    awaiting_confirmation: bool = False
     criteria: Optional[str] = None
-    original_criteria: Optional[str] = None
-    enhanced_candidate: Optional[str] = None
-    enhance_decided: bool = False
+    num_startups: Optional[int] = None
     attributes: list[str] = Field(default_factory=list)
     custom_attributes: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)          # for company_lookup / research_previous
+    suggestion: Optional[str] = None                            # a startup idea Scout offered (e.g. weather-tech)
+    focus_region: Optional[str] = None                          # e.g. "Jordan": every new search stays there
+    last_batch: list[str] = Field(default_factory=list)          # names found by the LAST job only
+    last_criteria: Optional[str] = None                         # memory of the last finished job
+    last_startups: list[MemoryStartup] = Field(default_factory=list)
 
 
 class ChatMessage(BaseModel):
@@ -120,37 +168,70 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: Optional[str] = None  # free text the user typed
-    action: Optional[Literal["init", "enhance", "keep", "use_enhanced", "use_original",
-                             "set_attributes", "reset"]] = None  # a button the user clicked
-    attributes: list[str] = Field(default_factory=list)          # payload for set_attributes
-    custom_attributes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
+    action: Optional[Literal["init", "reset"]] = None
     state: ConversationState = Field(default_factory=ConversationState)
     history: list[ChatMessage] = Field(default_factory=list)
 
 
+class Job(BaseModel):
+    """A unit of paid work the frontend should start (streams progress over SSE)."""
+
+    mode: Literal["list", "research", "lookup"]
+    criteria: str
+    max_startups: Optional[int] = None
+    attributes: list[str] = Field(default_factory=list)
+    custom_attributes: list[str] = Field(default_factory=list)
+    companies: list[MemoryStartup] = Field(default_factory=list)  # for lookup
+
+
 class ChatResponse(BaseModel):
-    messages: list[str]         # assistant messages to show, in order
+    messages: list[str]
     state: ConversationState
     step: Step
-    start_search: bool = False  # True when the user asked to start and everything is ready
+    route: str = "chat"
+    job: Optional[Job] = None
 
 
-class ChatExtraction(BaseModel):
-    """Structured output of the single chat LLM call: a natural reply + any info found in the message."""
+class SupervisorDecision(BaseModel):
+    """The Supervisor's structured decision for one user message."""
 
-    reply: str = Field(description="Short, friendly reply (1-2 sentences) to what the user actually said. "
-                                   "Do NOT ask for the next piece of information - the app adds that.")
-    intent: Literal["chat", "provide_info", "start_search", "reset"] = Field(
-        description="chat = greeting/question/small talk/off-topic; provide_info = user gave or changed "
-                    "criteria or attributes; start_search = user wants to start/run/go; "
-                    "reset = user wants a new search from scratch")
-    criteria: Optional[str] = Field(default=None, description="The investment thesis/search criteria, ONLY if "
-                                    "the user described the kind of startups they want (new or changed). "
-                                    "Keep their wording.")
-    use_default_attributes: bool = Field(default=False, description="User wants the default attributes")
-    preset_attributes: list[str] = Field(default_factory=list, description="Preset attributes the user asked "
-                                         "for, using the exact preset names")
-    custom_attributes: list[str] = Field(default_factory=list, description="Data points the user asked for "
-                                         "that are not in the preset list")
-    remove_attributes: list[str] = Field(default_factory=list, description="Attributes the user wants removed")
+    route: Route = Field(description="Which capability should handle this message (see the routing guide)")
+    on_topic: bool = Field(description="True for greetings in any language, thanks, questions about Scout itself, "
+                                       "and anything about startups, companies, investors, funding or startup "
+                                       "markets; false otherwise")
+    continues_previous: bool = Field(default=False, description="True if this message continues the earlier "
+                                     "conversation (follow-up, answer, or a change to the last request); false "
+                                     "if it starts a new topic")
+    reply: str = Field(description="Your chat reply. Answer the user naturally; if details are missing, ask for "
+                                   "ONE of them; for follow_up put the actual answer here.")
+    criteria: Optional[str] = Field(default=None, description="Kind of startups wanted (new or updated), if stated")
+    num_startups: Optional[int] = Field(default=None, description="How many startups the user wants, if stated")
+    companies: list[str] = Field(default_factory=list, description="Specific company names the user mentioned "
+                                 "(for company_lookup / research_previous)")
+    use_default_attributes: bool = Field(default=False, description="'the usual' / 'you choose' / 'anything'")
+    preset_attributes: list[str] = Field(default_factory=list, description="Requested data points matching presets")
+    custom_attributes: list[str] = Field(default_factory=list, description="Other requested data points")
+    remove_attributes: list[str] = Field(default_factory=list, description="Data points to remove")
+    question: Optional[str] = Field(default=None, description="For quick_answer: the question to research on the web")
+    region: Optional[str] = Field(default=None, description="Country/region the user wants startups from, if stated "
+                                  "in this message (e.g. 'Jordan'); 'anywhere' if they drop the limit")
+    suggestion: Optional[str] = Field(default=None, description="When linking an off-topic message to startups: the "
+                                      "startup search you offered, e.g. 'weather-tech / climate data startups'")
+    _from_plain_text: bool = PrivateAttr(default=False)  # True when the model answered in plain text
+
+
+class Translations(BaseModel):
+    items: list[str] = Field(description="The translated messages, same order and count as the input")
+
+
+class QuickAnswer(BaseModel):
+    found: bool = Field(description="True if the web results contain the answer to the question")
+    answer: str = Field(description="Short, factual answer (2-5 sentences) for the user, based only on the web results")
+    sources: list[str] = Field(default_factory=list, description="Up to 3 source URLs used")
+    next_query: Optional[str] = Field(default=None, description="If not found: ONE better web search to try next, "
+                                      "e.g. '<person name> <company> LinkedIn' or '<company> contact email'")
+
+
+class EnhanceRequest(BaseModel):
+    criteria: str = Field(..., min_length=3)

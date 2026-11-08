@@ -3,21 +3,28 @@
 Endpoints
 - GET  /health                 liveness check
 - GET  /api/attributes         preset data-point list for the UI
-- POST /api/chat               chatbot turn (single structured LLM call + fixed steps)
-- POST /api/enhance            'Enhance with AI' (single structured LLM call)
+- POST /api/chat               chatbot turn (the Supervisor: agents/supervisor.py)
+- POST /api/enhance            the ✨ button (one AI call: tools.enhance_criteria)
 - POST /api/search/stream      runs the full pipeline and streams progress as Server-Sent Events
 """
 import asyncio
+import logging
+
+# Developer logs (routes chosen, costs, errors) go to this terminal, never to the chat.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s %(name)s: %(message)s",
+                    datefmt="%H:%M:%S")
+for noisy in ("httpx", "httpcore", "groq", "openai", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from backend.chat_flow import handle_chat
-from backend.llm.enhance import enhance_criteria
+from backend.agents.supervisor import handle_chat
 from backend.pipeline import DONE, EventBus, run_pipeline, sse_format
 from backend.schemas import (DEFAULT_ATTRIBUTES, MAX_CUSTOM_ATTRIBUTES, PRESET_ATTRIBUTES, ChatRequest,
                              ChatResponse, EnhancedQuery, EnhanceRequest, SearchRequest)
+from backend.tools import enhance_criteria
 
 app = FastAPI(title="Investments Sourcing Agent", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -56,9 +63,9 @@ async def search_stream(req: SearchRequest):
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(bus.queue.get(), timeout=15)
+                    item = await asyncio.wait_for(bus.queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    yield ": keep-alive\n\n"  # SSE comment keeps proxies from closing the connection
+                    yield ": keep-alive\n\n"  # every 1s: keeps the connection open and lets the user stop quickly
                     continue
                 if item is DONE:
                     break

@@ -1,0 +1,11 @@
+# Scout theme: "aurora night sky" (the rest of the look is CSS in frontend/app.py)
+[theme]
+base = "dark"
+primaryColor = "#A78BFA"
+backgroundColor = "#0A0E1F"
+secondaryBackgroundColor = "#161B36"
+textColor = "#EAF0FF"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
